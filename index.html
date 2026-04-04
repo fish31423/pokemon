@@ -73,7 +73,6 @@
             margin: 0 20px;
         }
         
-        /* 莫兰迪色系 - 保留完整但移除未使用的变体 */
         .morandi-beige { background: linear-gradient(135deg, #E6D5C3 0%, #D4C5B0 100%); color: #5A4A42; }
         .morandi-gray-brown { background: linear-gradient(135deg, #D4C5B9 0%, #C4B5A5 100%); color: #4A403A; }
         .morandi-gray-green { background: linear-gradient(135deg, #B8C4B8 0%, #A8B4A8 100%); color: #3A4A3A; }
@@ -308,7 +307,6 @@
         
         input:focus, textarea:focus { box-shadow: 0 0 0 3px rgba(90,74,66,0.1); outline: none; }
 
-        /* 训练家顺序控制按钮样式 */
         .order-btn {
             padding: 6px 10px; border-radius: 8px; font-size: 11px;
             background: rgba(0,0,0,0.04); color: #666; border: 1px solid rgba(0,0,0,0.06);
@@ -740,46 +738,140 @@
         // 图片源配置
         const imageSources = {
             jsdelivr: (id) => `https://cdn.jsdelivr.net/gh/PokeAPI/sprites@master/sprites/pokemon/other/official-artwork/${id}.png`,
+            fastly: (id) => `https://fastly.jsdelivr.net/gh/PokeAPI/sprites@master/sprites/pokemon/other/official-artwork/${id}.png`,
+            ghproxy: (id) => `https://ghproxy.com/https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork/${id}.png`,
+            gcore: (id) => `https://gcore.jsdelivr.net/gh/PokeAPI/sprites@master/sprites/pokemon/other/official-artwork/${id}.png`,
             statically: (id) => `https://cdn.statically.io/gh/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork/${id}.png`,
             github: (id) => `https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork/${id}.png`,
             sprite: (id) => `https://cdn.jsdelivr.net/gh/PokeAPI/sprites@master/sprites/pokemon/${id}.png`
         };
 
-        // 图片缓存管理
-        const ImageCache = {
-            PREFIX: 'poke_img_',
-            MAX_CACHE_ITEMS: 200,
-            _key(id) { return this.PREFIX + id; },
-            get(id) {
-                try { return localStorage.getItem(this._key(id)); } catch(e) { return null; }
+        // IndexedDB 管理器
+        const DBManager = {
+            db: null,
+            DB_NAME: 'PokemonTicketDB',
+            DB_VERSION: 1,
+            
+            async init() {
+                return new Promise((resolve, reject) => {
+                    const request = indexedDB.open(this.DB_NAME, this.DB_VERSION);
+                    
+                    request.onerror = () => reject(request.error);
+                    request.onsuccess = () => {
+                        this.db = request.result;
+                        resolve();
+                    };
+                    
+                    request.onupgradeneeded = (event) => {
+                        const db = event.target.result;
+                        
+                        if (!db.objectStoreNames.contains('cards')) {
+                            db.createObjectStore('cards', { keyPath: 'id' });
+                        }
+                        if (!db.objectStoreNames.contains('users')) {
+                            db.createObjectStore('users', { keyPath: 'id' });
+                        }
+                        if (!db.objectStoreNames.contains('settings')) {
+                            db.createObjectStore('settings', { keyPath: 'key' });
+                        }
+                        if (!db.objectStoreNames.contains('imageCache')) {
+                            db.createObjectStore('imageCache', { keyPath: 'id' });
+                        }
+                    };
+                });
             },
-            set(id, base64Data) {
-                try {
-                    this._cleanupIfNeeded();
-                    localStorage.setItem(this._key(id), base64Data);
-                } catch (e) {
-                    if (e.name === 'QuotaExceededError') {
-                        this._forceCleanup();
-                        try { localStorage.setItem(this._key(id), base64Data); } catch(e2) {}
+            
+            async getAll(storeName) {
+                if (!this.db) await this.init();
+                return new Promise((resolve, reject) => {
+                    const transaction = this.db.transaction([storeName], 'readonly');
+                    const store = transaction.objectStore(storeName);
+                    const request = store.getAll();
+                    
+                    request.onsuccess = () => resolve(request.result);
+                    request.onerror = () => reject(request.error);
+                });
+            },
+            
+            async get(storeName, key) {
+                if (!this.db) await this.init();
+                return new Promise((resolve, reject) => {
+                    const transaction = this.db.transaction([storeName], 'readonly');
+                    const store = transaction.objectStore(storeName);
+                    const request = store.get(key);
+                    
+                    request.onsuccess = () => resolve(request.result);
+                    request.onerror = () => reject(request.error);
+                });
+            },
+            
+            async put(storeName, data) {
+                if (!this.db) await this.init();
+                return new Promise((resolve, reject) => {
+                    const transaction = this.db.transaction([storeName], 'readwrite');
+                    const store = transaction.objectStore(storeName);
+                    const request = store.put(data);
+                    
+                    request.onsuccess = () => resolve();
+                    request.onerror = () => reject(request.error);
+                });
+            },
+            
+            async delete(storeName, key) {
+                if (!this.db) await this.init();
+                return new Promise((resolve, reject) => {
+                    const transaction = this.db.transaction([storeName], 'readwrite');
+                    const store = transaction.objectStore(storeName);
+                    const request = store.delete(key);
+                    
+                    request.onsuccess = () => resolve();
+                    request.onerror = () => reject(request.error);
+                });
+            },
+            
+            async clear(storeName) {
+                if (!this.db) await this.init();
+                return new Promise((resolve, reject) => {
+                    const transaction = this.db.transaction([storeName], 'readwrite');
+                    const store = transaction.objectStore(storeName);
+                    const request = store.clear();
+                    
+                    request.onsuccess = () => resolve();
+                    request.onerror = () => reject(request.error);
+                });
+            }
+        };
+
+        // 图片缓存管理（使用IndexedDB）
+        const ImageCache = {
+            async get(id) {
+                const data = await DBManager.get('imageCache', 'poke_img_' + id);
+                return data ? data.value : null;
+            },
+            async set(id, base64Data) {
+                await this._cleanupIfNeeded();
+                await DBManager.put('imageCache', { 
+                    id: 'poke_img_' + id, 
+                    value: base64Data, 
+                    timestamp: Date.now() 
+                });
+            },
+            async _cleanupIfNeeded() {
+                const all = await DBManager.getAll('imageCache');
+                if (all.length > 200) {
+                    const sorted = all.sort((a, b) => a.timestamp - b.timestamp);
+                    const toDelete = sorted.slice(0, Math.floor(sorted.length * 0.3));
+                    for (const item of toDelete) {
+                        await DBManager.delete('imageCache', item.id);
                     }
                 }
-            },
-            _cleanupIfNeeded() {
-                const keys = Object.keys(localStorage).filter(k => k.startsWith(this.PREFIX));
-                if (keys.length > this.MAX_CACHE_ITEMS) {
-                    keys.slice(0, Math.floor(keys.length * 0.3)).forEach(k => localStorage.removeItem(k));
-                }
-            },
-            _forceCleanup() {
-                const keys = Object.keys(localStorage).filter(k => k.startsWith(this.PREFIX));
-                if (keys.length > 100) keys.slice(0, keys.length - 100).forEach(k => localStorage.removeItem(k));
             }
         };
 
         // 图片加载器
         const ImageLoader = {
             async load(imgElement, id) {
-                const cached = ImageCache.get(id);
+                const cached = await ImageCache.get(id);
                 if (cached) { 
                     imgElement.src = cached; 
                     imgElement.classList.remove('loading'); 
@@ -830,7 +922,7 @@
             async reload(imgElement) {
                 const id = imgElement.dataset.pokemonId;
                 if (!id) return;
-                localStorage.removeItem(ImageCache.PREFIX + id);
+                await DBManager.delete('imageCache', 'poke_img_' + id);
                 const fallback = imgElement.parentNode?.querySelector('.img-fallback');
                 if (fallback) fallback.remove();
                 imgElement.style.display = 'block';
@@ -871,8 +963,6 @@
             ImageLoader.reload(img);
         }
 
-        // 数据存储 - 使用简化的宝可梦数据结构（实际使用时应包含1-1025完整数据）
-        
         const pokemonData = {
             1: { name: "妙蛙种子", category: "种子宝可梦", description: "出生之后背上就种有种子。种子会跟着身体一起成长。", types: ["草", "毒"] },
             2: { name: "妙蛙草", category: "种子宝可梦", description: "当背上的花蕾长大之后，它似乎就无法再用两脚站立了。", types: ["草", "毒"] },
@@ -1901,7 +1991,6 @@
             1025: { name: "桃歹郎", category: "毒锁链宝可梦", description: "被毒素侵蚀的宝可梦。性情凶暴。", types: ["毒", "超能力"] }
         };
 
-
         const typeColors = {
             "一般": "#A8A878", "火": "#F08030", "水": "#6890F0", "草": "#78C850",
             "电": "#F8D030", "冰": "#98D8D8", "格斗": "#C03028", "毒": "#A040A0",
@@ -1920,7 +2009,7 @@
         let currentModalCard = null;
         let currentPokedexId = null;
 
-        // 莫兰迪色系（精简至常用24色）
+        // 莫兰迪色系 - 确保这个数组在生成前就已定义
         const morandiColors = [
             { class: 'morandi-beige', name: '米色' }, { class: 'morandi-gray-brown', name: '灰棕' },
             { class: 'morandi-gray-green', name: '灰绿' }, { class: 'morandi-gray-pink', name: '灰粉' },
@@ -1938,21 +2027,70 @@
             { class: 'morandi-lavender', name: '薰衣草' }
         ];
 
+        // 修复旧卡片颜色 - 数据迁移函数
+        async function fixCardColors() {
+            if (!morandiColors || morandiColors.length === 0) {
+                console.error('morandiColors 数组未定义或为空');
+                return false;
+            }
+            
+            let needsSave = false;
+            const fixedCards = cards.map(card => {
+                // 如果卡片没有颜色或颜色类无效，分配一个随机颜色
+                if (!card.colorClass || !morandiColors.some(c => c.class === card.colorClass)) {
+                    const randomColor = morandiColors[Math.floor(Math.random() * morandiColors.length)];
+                    needsSave = true;
+                    return {
+                        ...card,
+                        colorClass: randomColor.class,
+                        colorName: randomColor.name
+                    };
+                }
+                return card;
+            });
+            
+            if (needsSave) {
+                cards = fixedCards;
+                await saveData();
+                console.log('已修复旧卡片颜色');
+                return true;
+            }
+            return false;
+        }
+
+        // 获取随机颜色的安全函数
+        function getRandomColor() {
+            if (!morandiColors || morandiColors.length === 0) {
+                return { class: 'morandi-beige', name: '米色' };
+            }
+            const index = Math.floor(Math.random() * morandiColors.length);
+            return morandiColors[index] || morandiColors[0];
+        }
+
         // 初始化
-        document.addEventListener('DOMContentLoaded', () => {
+        document.addEventListener('DOMContentLoaded', async () => {
             try {
-                const savedCards = localStorage.getItem('pokeTickets');
-                const savedUsers = localStorage.getItem('pokeUsers');
-                const savedNicknames = localStorage.getItem('pokedexNicknames');
-                const savedCurrentUser = localStorage.getItem('currentUserId');
+                await DBManager.init();
                 
-                cards = savedCards ? JSON.parse(savedCards) : [];
-                users = savedUsers ? JSON.parse(savedUsers) : [{"id":1,"name":"小锐","avatar":null},{"id":2,"name":"鳝鱼","avatar":null}];
-                pokedexNicknames = savedNicknames ? JSON.parse(savedNicknames) : {};
-                currentUserId = savedCurrentUser ? parseInt(savedCurrentUser) : (users[0]?.id || 1);
+                const savedCards = await DBManager.get('settings', 'cards');
+                const savedUsers = await DBManager.get('settings', 'users');
+                const savedNicknames = await DBManager.get('settings', 'pokedexNicknames');
+                const savedCurrentUser = await DBManager.get('settings', 'currentUserId');
+                
+                cards = savedCards?.value || [];
+                users = savedUsers?.value || [{"id":1,"name":"小锐","avatar":null},{"id":2,"name":"鳝鱼","avatar":null}];
+                pokedexNicknames = savedNicknames?.value || {};
+                currentUserId = savedCurrentUser?.value || (users[0]?.id || 1);
+                
+                // 修复旧卡片颜色（关键修复）
+                await fixCardColors();
+                
             } catch(e) {
                 console.error('数据加载失败:', e);
-                cards = []; users = [{"id":1,"name":"小锐","avatar":null}]; pokedexNicknames = {}; currentUserId = 1;
+                cards = []; 
+                users = [{"id":1,"name":"小锐","avatar":null}]; 
+                pokedexNicknames = {}; 
+                currentUserId = 1;
             }
             
             renderUserSelector();
@@ -2015,7 +2153,9 @@
             for (let i = 0; i < count; i++) {
                 const pokemonId = Math.floor(Math.random() * 1025) + 1;
                 const pokemonName = getPokemonName(pokemonId);
-                const color = morandiColors[Math.floor(Math.random() * morandiColors.length)];
+                // 使用安全函数获取颜色
+                const color = getRandomColor();
+
                 
                 const card = {
                     id: Date.now() + i, 
@@ -2036,7 +2176,7 @@
                 cards.unshift(card);
             }
             
-            saveData();
+            await saveData();
             renderNewCards(currentBatch);
             renderHistory();
             updateStats();
@@ -2063,7 +2203,14 @@
             container.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
         }
 
+        // 创建票根HTML - 加强颜色兜底逻辑
         function createTicketHTML(card, isPreview = false) {
+            // 双重保险：如果颜色类无效，使用默认米色
+            let colorClass = card.colorClass;
+            if (!colorClass || !morandiColors.some(c => c.class === colorClass)) {
+                colorClass = 'morandi-beige';
+            }
+            
             const scale = isPreview ? 'transform scale-90 origin-top' : '';
             const redeemedBadge = card.redeemed ? '<div class="absolute top-3 right-3 px-3 py-1 bg-red-400/90 text-white text-[10px] rounded-full font-bold z-20 shadow-lg backdrop-blur-sm">已兑销</div>' : '';
             const displayName = card.pokemonName || `#${String(card.pokemonId).padStart(3,'0')}`;
@@ -2071,7 +2218,7 @@
             const types = getPokemonTypes(card.pokemonId);
             const typeBadges = generateTypeBadges(types);
             
-            return `<div class="ticket-root ${card.colorClass} ${scale}" id="ticket-${card.id}">
+            return `<div class="ticket-root ${colorClass} ${scale}" id="ticket-${card.id}">
                 ${redeemedBadge}
                 <div class="h-[180px] flex items-center justify-center p-4 relative overflow-hidden">
                     <div class="absolute inset-0 bg-gradient-to-b from-white/40 to-transparent"></div>
@@ -2195,7 +2342,7 @@
             } 
         }
 
-        function saveMessage() {
+        async function saveMessage() {
             if (!currentModalCard) return;
             const message = document.getElementById('messageInput')?.value.trim();
             if (!message) { showToast('请输入留言内容', '⚠️'); return; }
@@ -2204,7 +2351,7 @@
             if (cardIndex !== -1) {
                 cards[cardIndex].message = message;
                 currentModalCard.message = message;
-                saveData();
+                await saveData();
                 
                 const batchIndex = currentBatch.findIndex(c => c.id === currentModalCard.id);
                 if (batchIndex !== -1) currentBatch[batchIndex].message = message;
@@ -2281,12 +2428,20 @@
             } 
         }
 
-        function importCardKey() {
+        async function importCardKey() {
             const key = document.getElementById('cardKeyInput')?.value.trim();
             if (!key) { showToast('请输入秘钥', '⚠️'); return; }
             try {
                 const data = CryptoUtil.parseCardKey(key);
                 if (data.type !== 'POKEMON_CARD') throw new Error('无效的秘钥格式');
+                
+                // 检查导入的卡片是否有颜色，如果没有则分配一个
+                if (!data.colorClass || !morandiColors.some(c => c.class === data.colorClass)) {
+                    const randomColor = getRandomColor();
+                    data.colorClass = randomColor.class;
+                    data.colorName = randomColor.name;
+                }
+                
                 if (cards.find(c => c.id === data.id)) { 
                     showToast('此卡片已存在于您的记录中', '⚠️'); 
                     return; 
@@ -2294,7 +2449,7 @@
                 
                 const newCard = { ...data, importedAt: new Date().toISOString(), importedBy: getCurrentUser().id };
                 cards.unshift(newCard);
-                saveData();
+                await saveData();
                 renderHistory();
                 updateStats();
                 closeImportKeyModal();
@@ -2368,9 +2523,9 @@
             }).join('');
         }
         
-        function selectUser(userId) { 
+        async function selectUser(userId) { 
             currentUserId = userId; 
-            localStorage.setItem('currentUserId', String(userId)); 
+            await DBManager.put('settings', { key: 'currentUserId', value: userId });
             renderUserSelector(); 
         }
         
@@ -2558,7 +2713,7 @@
             } 
         }
 
-        function savePokedexNickname() {
+        async function savePokedexNickname() {
             if (!currentPokedexId) return;
             const input = document.getElementById('pokedexNicknameInput');
             const nickname = input ? input.value.trim() : '';
@@ -2566,13 +2721,13 @@
             if (nickname) pokedexNicknames[currentPokedexId] = nickname; 
             else delete pokedexNicknames[currentPokedexId];
             
-            localStorage.setItem('pokedexNicknames', JSON.stringify(pokedexNicknames));
+            await DBManager.put('settings', { key: 'pokedexNicknames', value: pokedexNicknames });
             renderUserPokedex(currentViewingUserId);
             closePokedexModal();
             showToast('昵称已保存', '✅');
         }
 
-        function setPokedexAsAvatar() {
+        async function setPokedexAsAvatar() {
             if (!currentPokedexId || !currentViewingUserId) return;
             const user = users.find(u => u.id === currentViewingUserId);
             if (!user) return;
@@ -2582,7 +2737,7 @@
             if (!pokemon) return;
             
             user.avatar = pokemon.image;
-            localStorage.setItem('pokeUsers', JSON.stringify(users));
+            await saveData();
             viewUserDetail(currentViewingUserId);
             renderUserSelector();
             renderUsersList();
@@ -2590,7 +2745,6 @@
             showToast('头像已设置', '✅');
         }
 
-        // ==================== 训练家管理（含顺序调整） ====================
         function showUserModal() {
             const modal = document.getElementById('userModal');
             const list = document.getElementById('userModalList');
@@ -2625,32 +2779,29 @@
             modal.classList.remove('hidden');
         }
 
-        // 训练家顺序调整功能
-        function moveUserUp(index) {
+        async function moveUserUp(index) {
             if (index <= 0 || index >= users.length) return;
-            // 交换位置
             [users[index - 1], users[index]] = [users[index], users[index - 1]];
-            saveData();
-            showUserModal(); // 刷新列表
-            renderUserSelector(); // 刷新选择器
+            await saveData();
+            showUserModal();
+            renderUserSelector();
             showToast('已上移', '⬆️');
         }
 
-        function moveUserDown(index) {
+        async function moveUserDown(index) {
             if (index < 0 || index >= users.length - 1) return;
-            // 交换位置
             [users[index], users[index + 1]] = [users[index + 1], users[index]];
-            saveData();
-            showUserModal(); // 刷新列表
-            renderUserSelector(); // 刷新选择器
+            await saveData();
+            showUserModal();
+            renderUserSelector();
             showToast('已下移', '⬇️');
         }
 
-        function moveUserToTop(index) {
+        async function moveUserToTop(index) {
             if (index <= 0 || index >= users.length) return;
             const user = users.splice(index, 1)[0];
             users.unshift(user);
-            saveData();
+            await saveData();
             showUserModal();
             renderUserSelector();
             showToast('已置顶', '⬆️');
@@ -2679,41 +2830,41 @@
             setTimeout(showAddUserModal, 100); 
         }
 
-        function addNewUser() {
+        async function addNewUser() {
             const input = document.getElementById('newUserName');
             const name = input ? input.value.trim() : '';
             if (!name) { showToast('请输入昵称', '⚠️'); return; }
             
             const newUser = { id: Date.now(), name: name, avatar: null };
             users.push(newUser);
-            saveData();
+            await saveData();
             renderUserSelector();
             closeAddUserModal();
             showToast('训练家添加成功', '✅');
         }
 
-        function editUser(userId) {
+        async function editUser(userId) {
             const user = users.find(u => u.id === userId);
             if (!user) return;
             const newName = prompt('修改昵称:', user.name);
             if (newName && newName.trim()) {
                 user.name = newName.trim();
-                saveData();
+                await saveData();
                 renderUserSelector();
                 showUserModal();
                 showToast('修改成功', '✅');
             }
         }
 
-        function deleteUser(userId) {
+        async function deleteUser(userId) {
             if (users.length <= 1) { showToast('至少需要保留一个训练家', '⚠️'); return; }
             if (!confirm('确定删除该训练家吗？该训练家的卡片记录将保留。')) return;
             
             users = users.filter(u => u.id !== userId);
-            saveData();
+            await saveData();
             if (currentUserId === userId) { 
                 currentUserId = users[0].id; 
-                localStorage.setItem('currentUserId', String(currentUserId)); 
+                await DBManager.put('settings', { key: 'currentUserId', value: currentUserId });
             }
             renderUserSelector();
             showUserModal();
@@ -2729,7 +2880,7 @@
                 document.getElementById('dataManagerModal')?.classList.add('hidden'); 
         }
 
-        function exportFullData() {
+        async function exportFullData() {
             const data = { 
                 cards: cards, 
                 users: users, 
@@ -2749,15 +2900,15 @@
             closeDataManagerModal();
         }
 
-        function importFullData() {
+        async function importFullData() {
             const input = document.createElement('input');
             input.type = 'file';
             input.accept = '.json';
-            input.onchange = (e) => {
+            input.onchange = async (e) => {
                 const file = e.target.files?.[0];
                 if (!file) return;
                 const reader = new FileReader();
-                reader.onload = (event) => {
+                reader.onload = async (event) => {
                     try {
                         const data = JSON.parse(event.target.result);
                         if (!data.cards || !data.users) throw new Error('无效的数据格式');
@@ -2765,7 +2916,11 @@
                             cards = data.cards; 
                             users = data.users; 
                             pokedexNicknames = data.pokedexNicknames || {};
-                            saveData();
+                            
+                            // 导入后修复颜色
+                            await fixCardColors();
+                            
+                            await saveData();
                             renderUserSelector();
                             renderHistory();
                             updateStats();
@@ -2781,7 +2936,7 @@
             input.click();
         }
 
-        function resetAllData() {
+        async function resetAllData() {
             if (!confirm('警告：这将清除所有数据，包括卡片、训练家记录和图鉴昵称！\n\n确定要继续吗？')) return;
             if (!confirm('最后确认：所有数据将被重置为初始状态（仅保留训练家"小锐"和"鳝鱼"）。\n\n此操作不可撤销！')) return;
             
@@ -2789,7 +2944,7 @@
             users = [{"id":1,"name":"小锐","avatar":null},{"id":2,"name":"鳝鱼","avatar":null}]; 
             pokedexNicknames = {}; 
             currentUserId = 1;
-            saveData();
+            await saveData();
             renderUserSelector();
             renderHistory();
             updateStats();
@@ -2829,7 +2984,7 @@
             redeemCode(); 
         }
 
-        function redeemCode() {
+        async function redeemCode() {
             const input = document.getElementById('redeemInput');
             const code = input ? input.value.trim() : '';
             
@@ -2841,7 +2996,7 @@
             
             card.redeemed = true; 
             card.redeemedAt = new Date().toISOString();
-            saveData();
+            await saveData();
             queryCode();
             updateStats();
             renderRedeemHistory();
@@ -2883,14 +3038,15 @@
             if (pending) pending.textContent = String(cards.filter(c => !c.redeemed).length);
         }
 
-        function saveData() {
+        async function saveData() {
             try {
-                localStorage.setItem('pokeTickets', JSON.stringify(cards));
-                localStorage.setItem('pokeUsers', JSON.stringify(users));
-                localStorage.setItem('pokedexNicknames', JSON.stringify(pokedexNicknames));
+                await DBManager.put('settings', { key: 'cards', value: cards });
+                await DBManager.put('settings', { key: 'users', value: users });
+                await DBManager.put('settings', { key: 'pokedexNicknames', value: pokedexNicknames });
+                await DBManager.put('settings', { key: 'currentUserId', value: currentUserId });
             } catch(e) {
                 console.error('Save failed:', e);
-                showToast('数据保存失败，可能是存储空间不足', '❌');
+                showToast('数据保存失败', '❌');
             }
         }
 
@@ -2906,7 +3062,7 @@
             setTimeout(() => toast.classList.remove('show'), 3000);
         }
 
-        // Canvas导出功能（保持原格式不变）
+        // Canvas导出功能
         const CanvasExport = {
             async exportTicket(card) {
                 const canvas = document.getElementById('exportCanvas');
@@ -2917,7 +3073,13 @@
                 canvas.height = height * scale; 
                 ctx.scale(scale, scale);
                 
-                const colorConfig = this.getColorConfig(card.colorClass);
+                // 确保颜色有效
+                let colorClass = card.colorClass;
+                if (!colorClass || !morandiColors.some(c => c.class === colorClass)) {
+                    colorClass = 'morandi-beige';
+                }
+                
+                const colorConfig = this.getColorConfig(colorClass);
                 const gradient = ctx.createLinearGradient(0, 0, width, height);
                 gradient.addColorStop(0, colorConfig.bg1); 
                 gradient.addColorStop(1, colorConfig.bg2);
